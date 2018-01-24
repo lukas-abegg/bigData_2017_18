@@ -36,7 +36,7 @@ public class JoinQuery {
                             public OrderPrice join(OrderData orderData, LineItem lineItem) throws Exception {
                                 return new OrderPrice(orderData.getOrderkey(), lineItem.getExtendedPrice());
                             }
-                        }).groupBy(0).sum(1);
+                        }).groupBy(0).sum(1).setParallelism(4);
 
                 if (params.has("output")) {
                     op.writeAsText(params.get("output"));
