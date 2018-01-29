@@ -1,12 +1,17 @@
+import org.apache.commons.lang3.builder.EqualsBuilder;
+import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.flink.api.common.functions.*;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
+import org.apache.flink.api.java.io.TextOutputFormat;
 import org.apache.flink.api.java.operators.IterativeDataSet;
 import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.util.Collector;
+
+import com.google.common.base.Joiner;
 
 import java.util.*;
 
@@ -36,8 +41,6 @@ public class Apriori {
 
         //set parallelism
         env.setParallelism(parall);
-
-        List<Tuple2<ArrayList<Integer>, Integer>> dataSets = new ArrayList<>();
 
 
         //GET DATA
@@ -130,7 +133,7 @@ public class Apriori {
 
 
         //env.fromCollection(dataSets).writeAsText("/Users/lukas/git-projects/bigData_2017_18/tutorial_3/output.txt");
-        output.writeAsText("/Users/lukas/git-projects/bigData_2017_18/tutorial_3/output.txt");
+        output.writeAsFormattedText("/Users/lukas/git-projects/bigData_2017_18/tutorial_3/output.txt", new ItemSetTextFormatter());
 
         env.execute("Apriori-Algo");
 
@@ -176,4 +179,100 @@ class ComputeFrequencies extends RichMapFunction<Tuple1<ArrayList<Integer>>, Tup
         }
         return new Tuple2<ArrayList<Integer>, Integer>(candidate.f0, frequency);
     }
+}
+
+
+
+class ItemSetTextFormatter implements TextOutputFormat.TextFormatter<Tuple2<ArrayList<Integer>, Integer>> {
+
+    private static final long serialVersionUID = 1L;
+
+    @Override
+    public String format(Tuple2<ArrayList<Integer>, Integer> value) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{" + Joiner.on(", ").join(value.f0) + "}\t" + value.f1);
+
+        return sb.toString();
+    }
+
+}
+
+
+
+class ItemSet {
+
+    public ArrayList<Integer> items;
+    private int numberOfTransactions;
+
+    // empty ItemSet
+    public ItemSet() {
+        this.items = new ArrayList<>();
+        this.numberOfTransactions = 0;
+    }
+
+    // ItemSet from an item
+    public ItemSet(Integer item) {
+        this.items = new ArrayList<>();
+        this.items.add(item);
+        this.numberOfTransactions = 1;
+    }
+
+    // ItemSet from list of items
+    public ItemSet(ArrayList<Integer> itemList) {
+        this.items = itemList;
+    }
+
+    public void setNumberOfTransactions(int numberOfTransactions) {
+        this.numberOfTransactions = numberOfTransactions;
+    }
+
+    public int getNumberOfTransactions() {
+        return numberOfTransactions;
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (obj == null) {
+            return false;
+        }
+
+        if (obj == this) {
+            return true;
+        }
+
+        if (obj.getClass() != getClass()) {
+            return false;
+        }
+
+        ItemSet rhs = (ItemSet) obj;
+        return new EqualsBuilder()
+                .appendSuper(super.equals(obj))
+                .append(items, rhs.items)
+                .append(numberOfTransactions, rhs.numberOfTransactions)
+                .isEquals();
+    }
+
+    @Override
+    public int hashCode() {
+        return new HashCodeBuilder(17, 31)
+                .append(items)
+                .append(numberOfTransactions)
+                .toHashCode();
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("ItemSet: {" + Joiner.on(", ").join(items) + "}\t" + numberOfTransactions + " transaction");
+
+        return sb.toString();
+    }
+
+    public String textFormat() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{" + Joiner.on(", ").join(items) + "}\t" + numberOfTransactions);
+
+        return sb.toString();
+    }
+
 }
