@@ -1,19 +1,18 @@
-import org.apache.commons.lang3.builder.EqualsBuilder;
-import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.flink.api.common.functions.*;
+import org.apache.flink.api.common.operators.Order;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.io.TextOutputFormat;
-import org.apache.flink.api.java.operators.IterativeDataSet;
-import org.apache.flink.api.java.tuple.Tuple1;
-import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.api.java.operators.DeltaIteration;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.util.Collector;
 
-import com.google.common.base.Joiner;
-
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 
 public class Apriori {
     public static void main(String[] args) throws Exception {
@@ -23,256 +22,256 @@ public class Apriori {
         env.getConfig().setGlobalJobParameters(params);
 
 
-        //GET PARAMETER VALUES
-        int parall = 1;
-        double minSup = 0.1;
+        //local example execution parameters: ./bin/flink run ~/IdeaProjects/apriori/target/reintippan-1.0-SNAPSHOT.jar --datapath /home/phil/IdeaProjects/apriori/src/main/java/data/BMS-POS.dat --output /home/phil/IdeaProjects/apriori/output.txt --parallelism 1 --iterations 3
+        // ./../flink-1.3.2/bin/flink run ~/git-projects/bigData_2017_18/tutorial_3/target/tutorial_3-1.0-SNAPSHOT.jar --datapath ~/git-projects/bigData_2017_18/tutorial_3/data/BMS-POS.dat --output ~/git-projects/bigData_2017_18/tutorial_3/data/output/output --parallelism 1 --iterations 3
+        //DEFINE PARAMETER VALUES
+        int parall;
+        double minSup;
+        int maxIterations;
+        String inputpath = null;
+        String outputPath = null;
 
-        String path = "/Users/lukas/git-projects/bigData_2017_18/tutorial_3/data/BMS-POS.dat";
-
-        if(params.has("parallel") && params.has("threshold") && params.has("path")){
+        if (params.has("datapath") && params.has("output")) {
             try {
-                parall = params.getInt("parallel");
-                minSup = params.getDouble("threshold");
-                path = params.get("path");
-            }catch (Exception e){
-                System.out.println("Wrong Parameters!");
+                inputpath = params.get("datapath");
+                outputPath = params.get("output");
+            } catch (Exception e) {
+                System.out.println("Please specify parameters datapath and output");
             }
         }
 
-        //set parallelism
+        //SET PARALLELISM
+        parall = params.getInt("parallelism", 2);
         env.setParallelism(parall);
 
-
         //GET DATA
-        DataSet<Tuple2<Integer, Integer>> data = getData(env, path);
+        DataSet<Datapoint> data = getData(env, inputpath);
 
         //GET RECORDS
-        DataSet<Tuple2<Integer, ArrayList<Integer>>> records = data.groupBy(0).reduceGroup(new reduceToBuckets());
+        DataSet<Bucket> records = data.groupBy(0).reduceGroup(new ReduceToBuckets());
 
         //GET AMOUNT OF MAX. ITERATIONS
-        Tuple1<Integer> biggestBucket = records.map(new MapFunction<Tuple2<Integer,ArrayList<Integer>>, Tuple1<Integer>>(){
-            public Tuple1<Integer> map(Tuple2<Integer, ArrayList<Integer>> datapoint) throws Exception{
-                //Tuple1<Integer> size = new Tuple1<Integer>();
-                //size.setField(datapoint.f1.size(),0);
-                return new Tuple1<Integer>(datapoint.f1.size());
+        BiggestBucket biggestBucket = records.map(new MapFunction<Bucket, BiggestBucket>() {
+            public BiggestBucket map(Bucket datapoint) throws Exception {
+                return new BiggestBucket(datapoint.getItems().size());
             }
         }).maxBy(0).collect().get(0);
-
-        Integer maxIterations = biggestBucket.f0;
+        maxIterations = biggestBucket.getFrequency();
 
         //GET AMOUNT OF BUCKETS
-        long amountRecords = records.map(new MapFunction<Tuple2<Integer,ArrayList<Integer>>, Integer>() {
-            public Integer map(Tuple2<Integer, ArrayList<Integer>> itemset) throws Exception {
-                return itemset.f0;
+        long amountRecords = records.map(new MapFunction<Bucket, Integer>() {
+            public Integer map(Bucket itemset) throws Exception {
+                return itemset.getBid();
             }
         }).count();
 
-        //GET ACTUAL MIN SUPPORT / THRESHOLD
-        final double thresh = 40000;//amountRecords*minSup;
+        //SET ALGORITHM PARAMETERS
+        minSup = params.getDouble("threshold", 0.05);
+        maxIterations = params.getInt("iterations", maxIterations);
 
-        //GET L_1
-        DataSet<Tuple2<ArrayList<Integer>, Integer>> L1 = data.map(new MapFunction<Tuple2<Integer,Integer>, Tuple2<Integer, Integer>>() {
-            public Tuple2<Integer, Integer> map(Tuple2<Integer, Integer> datapoint) throws Exception {
-                return new Tuple2<Integer, Integer>(datapoint.f1, 1);
-            }
-        })
-                .groupBy(0)
-                .reduce(new ReduceFunction<Tuple2<Integer, Integer>>() {
-                    public Tuple2<Integer, Integer> reduce(Tuple2<Integer, Integer> b1, Tuple2<Integer, Integer> b2) throws Exception {
-                        return new Tuple2<Integer, Integer>(b1.f0, b1.f1+b2.f1);
-                    }
-                })
-                .filter(new FilterFunction<Tuple2<Integer, Integer>>() {
-                    public boolean filter(Tuple2<Integer, Integer> itemset) throws Exception {
-                        return itemset.f1 >= thresh;
-                    }
-                }) //828
-                .map(new MapFunction<Tuple2<Integer, Integer>, Tuple2<ArrayList<Integer>, Integer>>() {
-                    public Tuple2<ArrayList<Integer>, Integer> map(Tuple2<Integer, Integer> itemset) throws Exception {
-                        return new Tuple2<ArrayList<Integer>, Integer>(new ArrayList<Integer>(Arrays.asList(itemset.f0)), itemset.f1);
-                    }
-                });
+        //GET RELATIVE MIN SUPPORT / THRESHOLD
+        final double thresh = amountRecords * minSup;
 
+        //GET l1
+        DataSet<Candidate> l1 = generateCandidatesL1(data, thresh);
 
-        //START ITERATION HERE
         //Iterate:
-        IterativeDataSet<Tuple2<ArrayList<Integer>, Integer>> init = L1.iterate(maxIterations - 1);
+        DeltaIteration<Candidate, Candidate> iteration = l1.iterateDelta(l1, maxIterations, 0).parallelism(1);
 
-        DataSet<Tuple1<ArrayList<Integer>>> Ck = init.cross(L1).with(new CrossFunction<Tuple2<ArrayList<Integer>, Integer>, Tuple2<ArrayList<Integer>, Integer>, Tuple1<ArrayList<Integer>>>() {
-            public Tuple1<ArrayList<Integer>> cross(Tuple2<ArrayList<Integer>, Integer> subset1, Tuple2<ArrayList<Integer>, Integer> subset2) throws Exception {
-                ArrayList<Integer> items = new ArrayList<Integer>();
-                items.addAll(subset1.f0);
+        DataSet<Candidate> ck = generateCandidates(iteration.getWorkset());
+        //DataSet<Candidate> pCk = pruneToLargeItemsets(ck);
+        DataSet<Candidate> lk = filterLargeItemsets(ck, records, thresh);
 
-                if(subset1.f0.size() > 1) {
-                    if (subset1.f0.subList(0, subset1.f0.size() - 2).equals(subset2.f0.subList(0, subset1.f0.size() - 2))
-                            && subset1.f0.get(subset1.f0.size() - 1) < subset2.f0.get(subset2.f0.size() - 1)) {
-                        items.add(subset2.f0.get(subset2.f0.size() - 1));
-                    } else {
-                        return new Tuple1<ArrayList<Integer>>(new ArrayList<Integer>(Arrays.asList(-1)));
-                    }
-                } else {
-                    if(subset1.f0.get(subset1.f0.size() - 1) < subset2.f0.get(subset2.f0.size() - 1)) {
-                        items.add(subset2.f0.get(subset2.f0.size() - 1));
-                    } else {
-                        return new Tuple1<ArrayList<Integer>>(new ArrayList<Integer>(Arrays.asList(-1)));
-                    }
-                }
-                Collections.sort(items);
-                return new Tuple1<ArrayList<Integer>>(items);
+        DataSet<Candidate> result = iteration.closeWith(iteration.getWorkset(), lk);
+
+        //Sort and print results
+        result.sortPartition(4, Order.ASCENDING).setParallelism(1).writeAsFormattedText(outputPath + ".txt", FileSystem.WriteMode.OVERWRITE, new TextOutputFormat.TextFormatter<Candidate>() {
+            @Override
+            public String format(Candidate candidate) {
+                return String.format("%s from  k-1 list %s with frequence %s", candidate.getItems().toString(), candidate.getParent(), candidate.getFrequency());
             }
-        });
+        }).setParallelism(1);
 
-        DataSet<Tuple2<ArrayList<Integer>, Integer>> Lk = Ck.map(new ComputeFrequencies()).withBroadcastSet(records, "records")
-                .filter(new FilterFunction<Tuple2<ArrayList<Integer>, Integer>>() {
-                    public boolean filter(Tuple2<ArrayList<Integer>, Integer> itemset) throws Exception {
-                       return itemset.f1 >= thresh;
-                    }
-                });
-
-        DataSet<Tuple2<ArrayList<Integer>, Integer>> output = init.closeWith(Lk, Lk);
-
-
-        //env.fromCollection(dataSets).writeAsText("/Users/lukas/git-projects/bigData_2017_18/tutorial_3/output.txt");
-        output.writeAsFormattedText("/Users/lukas/git-projects/bigData_2017_18/tutorial_3/output.txt", new ItemSetTextFormatter());
+        generateAssociationRules(result, amountRecords).sortPartition(3, Order.ASCENDING).setParallelism(1).writeAsFormattedText(outputPath + "_assoc.txt", FileSystem.WriteMode.OVERWRITE, new TextOutputFormat.TextFormatter<AssociatonRule>() {
+            @Override
+            public String format(AssociatonRule assoc) {
+                return String.format("%s -> %s with confidence %s", assoc.getAssocItem(), assoc.getParent(), assoc.getConfidence());
+            }
+        }).setParallelism(1);
 
         env.execute("Apriori-Algo");
 
     }
 
-    public static DataSet<Tuple2<Integer, Integer>> getData(ExecutionEnvironment env, String path){
+    private static DataSet<Datapoint> getData(ExecutionEnvironment env, String path) {
         return env.readCsvFile(path)
                 .includeFields("11")
                 .fieldDelimiter("\t")
                 .lineDelimiter("\n")
-                .types(Integer.class, Integer.class);
+                .tupleType(Datapoint.class);
+    }
+
+    private static DataSet<Candidate> generateCandidatesL1(DataSet<Datapoint> data, Double thresh) {
+        DataSet<Candidate> l1 = data.map(new MapFunction<Datapoint, Candidate>() {
+            public Candidate map(Datapoint datapoint) throws Exception {
+                return new Candidate(Arrays.asList(datapoint.getItem()).toString(), datapoint.getItem().toString(), new ArrayList<>(Arrays.asList(datapoint.getItem())), 1, 1);
+            }
+        })
+                .groupBy(1)
+                .reduce(new ReduceFunction<Candidate>() {
+                    public Candidate reduce(Candidate b1, Candidate b2) throws Exception {
+                        return new Candidate(b1.getKey(), b1.getParent(), b1.getItems(), b1.getFrequency() + b2.getFrequency(), b1.getItems().size());
+                    }
+                })
+                .filter(new FilterFunction<Candidate>() {
+                    public boolean filter(Candidate itemset) throws Exception {
+                        return itemset.getFrequency() >= thresh;
+                    }
+                })
+                .map(new MapFunction<Candidate, Candidate>() {
+                    public Candidate map(Candidate candidate) throws Exception {
+                        return new Candidate(candidate.getKey(), "$", candidate.getItems(), candidate.getFrequency(), candidate.getLevel());
+                    }
+                });
+        return l1;
+    }
+
+    private static DataSet<Candidate> generateCandidates(DataSet<Candidate> dataSet) {
+        DataSet<Candidate> ck = dataSet.join(dataSet).where(1).equalTo(1).with(new JoinFunction<Candidate, Candidate, Candidate>() {
+            public Candidate join(Candidate candidate1, Candidate candidate2) throws Exception {
+                //sorting
+                ArrayList<Integer> newCandidate = candidate1.getItems();
+                Collections.sort(newCandidate);
+                newCandidate.add(candidate2.getItems().get(candidate2.getItems().size() - 1));
+                return new Candidate(newCandidate.toString(), newCandidate.subList(0, newCandidate.size() - 1).toString(), newCandidate, 1, newCandidate.size());
+            }
+        }).filter(new FilterFunction<Candidate>() {
+            public boolean filter(Candidate candidate) throws Exception {
+                Integer lastBucketItem = candidate.getItems().get(candidate.getItems().size() - 1);
+                Integer secondLastBucketItem = candidate.getItems().get(candidate.getItems().size() - 2);
+                return secondLastBucketItem < lastBucketItem;
+            }
+        });
+        return ck;
+    }
+
+    private static DataSet<Candidate> pruneToLargeItemsets(DataSet<Candidate> dataSet) {
+        DataSet<String> parents = dataSet.map(new MapFunction<Candidate, String>() {
+            public String map(Candidate candidate) throws Exception {
+                return candidate.getParent();
+            }
+        }).distinct();
+
+        DataSet<Candidate> pCk = dataSet
+                .filter(new FilterPruningFunction())
+                .withBroadcastSet(parents, "parents");
+        return pCk;
+    }
+
+    private static DataSet<Candidate> filterLargeItemsets(DataSet<Candidate> ck, DataSet<Bucket> records, Double thresh) {
+        DataSet<Candidate> lk = records.flatMap(new ComputeFrequenciesBuckets())
+                .withBroadcastSet(ck, "candidates")
+                .groupBy(0)
+                .reduce(new ReduceFunction<Candidate>() {
+                    public Candidate reduce(Candidate b1, Candidate b2) throws Exception {
+                        return new Candidate(b1.getKey(), b1.getParent(), b1.getItems(), b1.getFrequency() + b2.getFrequency(), b1.getItems().size());
+                    }
+                })
+                .filter(new FilterFunction<Candidate>() {
+                    public boolean filter(Candidate itemset) throws Exception {
+                        return itemset.getFrequency() >= thresh;
+                    }
+                });
+        return lk;
+    }
+
+    private static DataSet<AssociatonRule> generateAssociationRules(DataSet<Candidate> result, long amountRecords) {
+        DataSet<AssociatonRule> assocs = result.join(result).where(0).equalTo(1).with(new JoinFunction<Candidate, Candidate, AssociatonRule>() {
+            public AssociatonRule join(Candidate candidate1, Candidate candidate2) throws Exception {
+                Double suppCand1 = candidate1.getFrequency().doubleValue() / amountRecords;
+                Double suppCand2 = candidate2.getFrequency().doubleValue() / amountRecords;
+                Double confidence = suppCand2 / suppCand1;
+                return new AssociatonRule(candidate2.getParent(), candidate2.getItems().get(candidate2.getItems().size() - 1).toString(), confidence, candidate2.getItems().size());
+            }
+        });
+        return assocs;
     }
 }
 
-class reduceToBuckets implements GroupReduceFunction<Tuple2<Integer, Integer>, Tuple2<Integer, ArrayList<Integer>>> {
-    public void reduce(Iterable<Tuple2<Integer, Integer>> data, Collector<Tuple2<Integer, ArrayList<Integer>>> bucket) throws Exception {
-        ArrayList<Integer> items = new ArrayList<Integer>();
+class ReduceToBuckets implements GroupReduceFunction<Datapoint, Bucket> {
+    public void reduce(Iterable<Datapoint> data, Collector<Bucket> bucket) {
+        ArrayList<Integer> items = new ArrayList<>();
         Integer bid = null;
-        for (Tuple2<Integer, Integer> d : data){
-            items.add(d.f1);
-            bid = d.f0;
+
+        for (Datapoint d : data) {
+            items.add(d.getItem());
+            bid = d.getBid();
         }
-        bucket.collect(new Tuple2<Integer, ArrayList<Integer>>(bid, items));
+
+        bucket.collect(new Bucket(bid, items));
     }
 }
 
-class ComputeFrequencies extends RichMapFunction<Tuple1<ArrayList<Integer>>, Tuple2<ArrayList<Integer>, Integer>>{
-    private Collection<Tuple2<Integer, ArrayList<Integer>>> records;
+class FilterPruningFunction extends RichFilterFunction<Candidate> {
+    private Collection<String> parents;
 
     @Override
-    public void open(Configuration parameters) throws Exception{
+    public void open(Configuration parameters) {
+        this.parents = getRuntimeContext().getBroadcastVariable("parents");
+    }
+
+    @Override
+    public boolean filter(Candidate candidate) throws Exception {
+        ArrayList<String> itemsets = new ArrayList<>();
+
+        ArrayList<Integer> items = candidate.getItems();
+
+
+        for (Integer item : items) {
+            ArrayList<Integer> itemset = candidate.getItems();
+            itemset.remove(item);
+            itemsets.add(itemset.toString());
+        }
+
+        return parents.containsAll(itemsets);
+    }
+}
+
+class ComputeFrequencies extends RichMapFunction<Candidate, Candidate> {
+    private Collection<Bucket> records;
+
+    @Override
+    public void open(Configuration parameters) {
         this.records = getRuntimeContext().getBroadcastVariable("records");
     }
 
     @Override
-    public Tuple2<ArrayList<Integer>, Integer> map(Tuple1<ArrayList<Integer>> candidate){
+    public Candidate map(Candidate candidate) {
         int frequency = 0;
 
-        for(Tuple2<Integer, ArrayList<Integer>> record : this.records){
-            if(record.f1.containsAll(candidate.f0)){
+        for (Bucket record : this.records) {
+            if (record.getItems().containsAll(candidate.getItems())) {
                 frequency++;
             }
         }
-        return new Tuple2<ArrayList<Integer>, Integer>(candidate.f0, frequency);
+        return new Candidate(candidate.getKey(), candidate.getParent(), candidate.getItems(), frequency, candidate.getLevel());
     }
 }
 
-
-
-class ItemSetTextFormatter implements TextOutputFormat.TextFormatter<Tuple2<ArrayList<Integer>, Integer>> {
-
-    private static final long serialVersionUID = 1L;
+class ComputeFrequenciesBuckets extends RichFlatMapFunction<Bucket, Candidate> {
+    private Collection<Candidate> candidates;
 
     @Override
-    public String format(Tuple2<ArrayList<Integer>, Integer> value) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{" + Joiner.on(", ").join(value.f0) + "}\t" + value.f1);
-
-        return sb.toString();
-    }
-
-}
-
-
-
-class ItemSet {
-
-    public ArrayList<Integer> items;
-    private int numberOfTransactions;
-
-    // empty ItemSet
-    public ItemSet() {
-        this.items = new ArrayList<>();
-        this.numberOfTransactions = 0;
-    }
-
-    // ItemSet from an item
-    public ItemSet(Integer item) {
-        this.items = new ArrayList<>();
-        this.items.add(item);
-        this.numberOfTransactions = 1;
-    }
-
-    // ItemSet from list of items
-    public ItemSet(ArrayList<Integer> itemList) {
-        this.items = itemList;
-    }
-
-    public void setNumberOfTransactions(int numberOfTransactions) {
-        this.numberOfTransactions = numberOfTransactions;
-    }
-
-    public int getNumberOfTransactions() {
-        return numberOfTransactions;
+    public void open(Configuration parameters) {
+        this.candidates = getRuntimeContext().getBroadcastVariable("candidates");
     }
 
     @Override
-    public boolean equals(Object obj) {
-        if (obj == null) {
-            return false;
+    public void flatMap(Bucket record, Collector<Candidate> collector) throws Exception {
+        for (Candidate candidate : this.candidates) {
+            if (record.getItems().containsAll(candidate.getItems())) {
+                collector.collect(new Candidate(candidate.getKey(), candidate.getParent(), candidate.getItems(), 1, candidate.getLevel()));
+            }
         }
-
-        if (obj == this) {
-            return true;
-        }
-
-        if (obj.getClass() != getClass()) {
-            return false;
-        }
-
-        ItemSet rhs = (ItemSet) obj;
-        return new EqualsBuilder()
-                .appendSuper(super.equals(obj))
-                .append(items, rhs.items)
-                .append(numberOfTransactions, rhs.numberOfTransactions)
-                .isEquals();
     }
-
-    @Override
-    public int hashCode() {
-        return new HashCodeBuilder(17, 31)
-                .append(items)
-                .append(numberOfTransactions)
-                .toHashCode();
-    }
-
-    @Override
-    public String toString() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("ItemSet: {" + Joiner.on(", ").join(items) + "}\t" + numberOfTransactions + " transaction");
-
-        return sb.toString();
-    }
-
-    public String textFormat() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("{" + Joiner.on(", ").join(items) + "}\t" + numberOfTransactions);
-
-        return sb.toString();
-    }
-
 }
