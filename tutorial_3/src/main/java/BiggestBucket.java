@@ -5,11 +5,11 @@ public class BiggestBucket extends Tuple1<Integer> {
     public BiggestBucket() {
     }
 
-    public BiggestBucket(Integer frequency) {
-        super(frequency);
+    public BiggestBucket(Integer size) {
+        super(size);
     }
 
-    public Integer getFrequency() {
+    public Integer getSize() {
         return this.f0;
     }
 }

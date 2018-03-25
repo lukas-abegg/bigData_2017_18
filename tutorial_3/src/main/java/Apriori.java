@@ -56,7 +56,7 @@ public class Apriori {
                 return new BiggestBucket(datapoint.getItems().size());
             }
         }).maxBy(0).collect().get(0);
-        maxIterations = biggestBucket.getFrequency();
+        maxIterations = biggestBucket.getSize();
 
         //GET AMOUNT OF BUCKETS
         long amountRecords = records.map(new MapFunction<Bucket, Integer>() {
