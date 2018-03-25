@@ -114,10 +114,10 @@ public class Apriori {
     private static DataSet<Candidate> generateCandidatesL1(DataSet<Datapoint> data, Double thresh) {
         DataSet<Candidate> l1 = data.map(new MapFunction<Datapoint, Candidate>() {
             public Candidate map(Datapoint datapoint) throws Exception {
-                return new Candidate(Arrays.asList(datapoint.getItem()).toString(), datapoint.getItem().toString(), new ArrayList<>(Arrays.asList(datapoint.getItem())), 1, 1);
+                return new Candidate(Arrays.asList(datapoint.getItem()).toString(), "$", new ArrayList<>(Arrays.asList(datapoint.getItem())), 1, 1);
             }
         })
-                .groupBy(1)
+                .groupBy(0)
                 .reduce(new ReduceFunction<Candidate>() {
                     public Candidate reduce(Candidate b1, Candidate b2) throws Exception {
                         return new Candidate(b1.getKey(), b1.getParent(), b1.getItems(), b1.getFrequency() + b2.getFrequency(), b1.getItems().size());
@@ -126,11 +126,6 @@ public class Apriori {
                 .filter(new FilterFunction<Candidate>() {
                     public boolean filter(Candidate itemset) throws Exception {
                         return itemset.getFrequency() >= thresh;
-                    }
-                })
-                .map(new MapFunction<Candidate, Candidate>() {
-                    public Candidate map(Candidate candidate) throws Exception {
-                        return new Candidate(candidate.getKey(), "$", candidate.getItems(), candidate.getFrequency(), candidate.getLevel());
                     }
                 });
         return l1;
